@@ -6,7 +6,7 @@ from fastapi import FastAPI, HTTPException, Header
 from pydantic import BaseModel, Field
 import joblib
 import numpy as np
-import pandas as pd
+import warnings
 import os
 
 app = FastAPI()
@@ -74,9 +74,9 @@ def score(
         raise HTTPException(status_code=401, detail="Unauthorized")
 
     vec = to_vector(payload)
-    FEATURE_COLS = ["mouse_m","mouse_s","click_m","click_s","key_m","key_s","idle_m","idle_s","density","idle_ratio"]
-    df  = pd.DataFrame([vec], columns=FEATURE_COLS)
-    raw = float(clf.score_samples(df)[0])
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        raw = float(clf.score_samples([vec])[0])
     return {
         "raw_score":  round(raw, 4),
         "normalized": round(normalize(raw), 4),
