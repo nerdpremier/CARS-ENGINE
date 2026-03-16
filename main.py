@@ -85,6 +85,44 @@ def score(
     }
 
 
+# แปลง normalized score → action (LOW/MEDIUM/REVOKE) ใน engine
+RISK_MEDIUM_THRESHOLD = float(os.getenv("RISK_MEDIUM_THRESHOLD", "0.5"))
+RISK_REVOKE_THRESHOLD = float(os.getenv("RISK_REVOKE_THRESHOLD", "0.85"))
+
+
+@app.post("/decision")
+def decision(
+    payload: BehaviorPayload,
+    x_api_key: str = Header(..., alias="x-api-key"),
+):
+    if x_api_key != API_SECRET:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    vec = to_vector(payload)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        raw = float(clf.score_samples([vec])[0])
+
+    normalized = normalize(raw)
+
+    if normalized >= RISK_REVOKE_THRESHOLD:
+        action = "revoke"
+    elif normalized >= RISK_MEDIUM_THRESHOLD:
+        action = "medium"
+    else:
+        action = "low"
+
+    return {
+        "action":      action,
+        "raw_score":   round(raw, 4),
+        "normalized":  round(normalized, 4),
+        "thresholds": {
+            "medium": RISK_MEDIUM_THRESHOLD,
+            "revoke": RISK_REVOKE_THRESHOLD,
+        },
+    }
+
+
 @app.get("/health")
 def health():
     return {
