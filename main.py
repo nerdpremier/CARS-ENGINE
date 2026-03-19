@@ -25,8 +25,8 @@ API_SECRET = os.getenv("RISK_API_SECRET", "change-me")
 #    SIG_MIN = sigmoid ของ normal สุด (ค่าต่ำ)
 #    SIG_MAX = sigmoid ของ anomalous สุด (ค่าสูง)
 # empirical จาก 50,000 random samples
-SIG_MIN = 0.6291
-SIG_MAX = 0.6777
+SIG_MIN = 0.6021358173246466
+SIG_MAX = 0.6439281474527869
 
 
 class Stats(BaseModel):
