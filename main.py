@@ -32,7 +32,7 @@ API_SECRET = os.getenv("RISK_API_SECRET", "change-me")
 # Controls how quickly normalized score rises around the model boundary.
 # Smaller value = smoother / less sensitive.
 # Larger value = steeper / more sensitive.
-RISK_SCALE = float(os.getenv("RISK_SCALE", "0.05"))
+RISK_SCALE = float(os.getenv("RISK_SCALE", "0.02"))
 EPS = 1e-12
 
 try:
