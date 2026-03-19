@@ -15,22 +15,23 @@ MODEL_PATH = os.getenv("MODEL_PATH", "isolation_forest_model.pkl")
 try:
     bundle = joblib.load(MODEL_PATH)
     clf = bundle["model"] if isinstance(bundle, dict) else bundle
+    TRAIN_SCORE_MIN = float(bundle.get("train_score_min", -0.67)) if isinstance(bundle, dict) else -0.67
+    TRAIN_SCORE_MAX = float(bundle.get("train_score_max", -0.41)) if isinstance(bundle, dict) else -0.41
 except Exception as e:
     raise RuntimeError(f"Cannot load model at '{MODEL_PATH}': {e}")
 
 API_SECRET = os.getenv("RISK_API_SECRET", "change-me")
-
-SIG_MIN = 0.6021
-SIG_MAX = 0.6439
 
 
 class Stats(BaseModel):
     m: float = Field(ge=0, le=1)
     s: float = Field(ge=0, le=1)
 
+
 class Features(BaseModel):
     density: float = Field(ge=0, le=1)
     idle_ratio: float = Field(ge=0, le=1)
+
 
 class BehaviorPayload(BaseModel):
     mouse: Stats
@@ -52,8 +53,13 @@ def to_vector(b: BehaviorPayload) -> list[float]:
 
 
 def normalize(raw_score: float) -> float:
-    sig = 1.0 / (1.0 + np.exp(raw_score))
-    return float(np.clip((sig - SIG_MIN) / (SIG_MAX - SIG_MIN), 0.0, 1.0))
+    # IsolationForest: raw score ยิ่งต่ำ = ยิ่งผิดปกติ
+    denom = TRAIN_SCORE_MAX - TRAIN_SCORE_MIN
+    if denom <= 0:
+        return 0.0
+
+    risk = (TRAIN_SCORE_MAX - raw_score) / denom
+    return float(np.clip(risk, 0.0, 1.0))
 
 
 @app.post("/score")
@@ -68,16 +74,19 @@ def score(
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         raw = float(clf.score_samples([vec])[0])
+        decision = float(clf.decision_function([vec])[0])
 
     return {
         "raw_score": round(raw, 4),
+        "decision": round(decision, 4),
         "normalized": round(normalize(raw), 4),
     }
+
 
 @app.get("/health")
 def health():
     return {
         "status": "ok",
-        "sig_min": SIG_MIN,
-        "sig_max": SIG_MAX,
+        "train_score_min": round(TRAIN_SCORE_MIN, 4),
+        "train_score_max": round(TRAIN_SCORE_MAX, 4),
     }
