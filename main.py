@@ -1,22 +1,21 @@
 """
 Risk Engine — Isolation Forest scoring microservice
-Decision-centered normalization for streaming behavior scoring.
+Decision-centered normalization + rule-based auto-click boost.
 
-Why this version:
-- The previous min/max or pseudo-percentile normalization still stayed high
-  because the model's raw score distribution is very compressed.
-- For IsolationForest, the real anomaly boundary is better represented by
-  decision_function(), where:
-      decision > 0  => normal side
-      decision < 0  => anomalous side
-- This service keeps normalization, but normalizes around the model boundary
-  instead of around train min/max extremes.
+แนวคิด:
+1) ใช้ Isolation Forest ให้คะแนนพฤติกรรมรวม
+2) ใช้ decision_function() เป็นแกน normalize เพราะ decision=0 คือเส้นแบ่ง anomaly ของโมเดล
+3) เพิ่ม rule-based detector สำหรับ auto click
+4) ถ้าเข้าเงื่อนไข auto click ให้ boost score ขึ้นทันที
 
 Output meaning:
-- normalized close to 0.0 => normal behavior
-- normalized around 0.5   => near model boundary
-- normalized close to 1.0 => increasingly anomalous
+- raw_score   : คะแนนดิบจาก Isolation Forest
+- decision    : ค่าจาก decision_function()
+                > 0 = ปกติ, < 0 = ฝั่ง anomaly
+- base_score  : score ที่ normalize จาก decision อย่างเดียว
+- normalized  : final score หลังรวม auto-click rule
 """
+
 from fastapi import FastAPI, HTTPException, Header
 from pydantic import BaseModel, Field
 import joblib
@@ -24,15 +23,14 @@ import numpy as np
 import warnings
 import os
 
-app = FastAPI(title="Risk Engine", version="3.1-decision-normalized")
+app = FastAPI(title="Risk Engine", version="4.0-decision-autoclick")
 
 MODEL_PATH = os.getenv("MODEL_PATH", "isolation_forest_model.pkl")
 API_SECRET = os.getenv("RISK_API_SECRET", "change-me")
 
-# Controls how quickly normalized score rises around the model boundary.
-# Smaller value = smoother / less sensitive.
-# Larger value = steeper / more sensitive.
-RISK_SCALE = float(os.getenv("RISK_SCALE", "0.02"))
+# scale ยิ่งมาก = score นุ่มขึ้น
+# scale ยิ่งน้อย = score ชัน/ไวขึ้น
+RISK_SCALE = float(os.getenv("RISK_SCALE", "0.12"))
 EPS = 1e-12
 
 try:
@@ -40,7 +38,7 @@ try:
 except Exception as e:
     raise RuntimeError(f"Cannot load model at '{MODEL_PATH}': {e}")
 
-# Support both bundle-dict and direct model object
+# รองรับทั้งกรณี bundle dict และ model ตรง ๆ
 if isinstance(loaded, dict):
     bundle = loaded
     clf = bundle["model"] if "model" in bundle else loaded
@@ -84,33 +82,115 @@ def to_vector(b: BehaviorPayload) -> list[float]:
     ]
 
     if FEATURE_COLS is not None and len(FEATURE_COLS) != len(vec):
-        raise HTTPException(status_code=500, detail="Feature dimension mismatch with trained model")
+        raise HTTPException(
+            status_code=500,
+            detail="Feature dimension mismatch with trained model"
+        )
 
     return vec
 
 
 def normalize_from_decision(decision: float) -> float:
     """
-    Convert decision_function output into [0, 1] risk score.
+    แปลง decision_function() เป็น risk score ในช่วง [0, 1]
 
-    decision_function meaning in IsolationForest:
-      decision > 0  => normal
-      decision = 0  => model boundary
-      decision < 0  => anomaly side
+    Isolation Forest:
+    - decision > 0  => ปกติ
+    - decision = 0  => เส้นแบ่งของโมเดล
+    - decision < 0  => ผิดปกติ
 
-    We map it with a sigmoid centered at 0 and flipped so that:
-      - strongly positive decision => near 0
-      - near zero                 => around 0.5
-      - strongly negative         => near 1
+    ใช้ sigmoid กลับด้าน:
+        risk = 1 / (1 + exp(decision / scale))
 
-    Formula:
-      risk = 1 / (1 + exp(decision / scale))
-
-    scale is configurable via RISK_SCALE.
+    ผลลัพธ์:
+    - decision บวกมาก  -> risk ใกล้ 0
+    - decision ใกล้ 0   -> risk ใกล้ 0.5
+    - decision ติดลบมาก -> risk ใกล้ 1
     """
     scale = max(RISK_SCALE, EPS)
     risk = 1.0 / (1.0 + np.exp(decision / scale))
     return float(np.clip(risk, 0.0, 1.0))
+
+
+def detect_auto_click_rule(b: BehaviorPayload) -> dict:
+    """
+    ตรวจ pattern auto click แบบ rule-based
+
+    เหตุผลที่ใช้ rule เพิ่ม:
+    - auto click เป็น signature เฉพาะ
+    - unsupervised model อาจไม่ไวพอในบางเคส
+    - จึงใช้กฎช่วย boost score ให้ตอบสนองเร็วขึ้น
+    """
+    reasons = []
+    severity = 0.0
+
+    click_m = b.click.m
+    click_s = b.click.s
+    mouse_m = b.mouse.m
+    mouse_s = b.mouse.s
+    key_m = b.key.m
+    idle_ratio = b.features.idle_ratio
+    density = b.features.density
+
+    # 1) click สูง แต่ mouse activity ต่ำมาก
+    if click_m >= 0.75 and mouse_m <= 0.10:
+        severity += 0.35
+        reasons.append("high_click_low_mouse")
+
+    # 2) click สูงและสม่ำเสมอมากผิดธรรมชาติ
+    if click_m >= 0.70 and click_s >= 0.90:
+        severity += 0.25
+        reasons.append("high_click_high_regular")
+
+    # 3) click สูง แต่ keyboard activity ต่ำมาก
+    if click_m >= 0.70 and key_m <= 0.05:
+        severity += 0.15
+        reasons.append("high_click_low_key")
+
+    # 4) active ต่อเนื่องมาก แทบไม่ idle
+    if click_m >= 0.65 and idle_ratio <= 0.02 and density >= 0.80:
+        severity += 0.20
+        reasons.append("continuous_dense_clicking")
+
+    # 5) mouse variation ต่ำมาก แต่ click สูง
+    if click_m >= 0.70 and mouse_s <= 0.03:
+        severity += 0.20
+        reasons.append("high_click_low_mouse_variation")
+
+    severity = min(severity, 1.0)
+    detected = severity >= 0.25
+
+    return {
+        "detected": detected,
+        "severity": float(round(severity, 6)),
+        "reasons": reasons,
+    }
+
+
+def combine_scores(base_score: float, auto_click: dict) -> float:
+    """
+    รวมคะแนนจากโมเดลและกฎ auto click
+
+    แนวคิด:
+    - ถ้ายังไม่เจอ auto click -> ใช้ base_score
+    - ถ้าเจอ -> boost ตาม severity
+    - ถ้า severity สูงมาก -> ดันขั้นต่ำขึ้นทันที
+    """
+    final_score = base_score
+
+    if auto_click["detected"]:
+        severity = auto_click["severity"]
+
+        # boost แบบนุ่ม ๆ ก่อน
+        final_score = min(1.0, base_score + severity * 0.5)
+
+        # ถ้ารุนแรงมาก ดันขั้นต่ำขึ้นเลย
+        if severity >= 0.60:
+            final_score = max(final_score, 0.95)
+        elif severity >= 0.35:
+            final_score = max(final_score, 0.85)
+
+    return float(np.clip(final_score, 0.0, 1.0))
 
 
 @app.post("/score")
@@ -122,16 +202,25 @@ def score(
         raise HTTPException(status_code=401, detail="Unauthorized")
 
     vec = to_vector(payload)
+
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         raw = float(clf.score_samples([vec])[0])
         decision = float(clf.decision_function([vec])[0])
 
+    base_score = normalize_from_decision(decision)
+    auto_click = detect_auto_click_rule(payload)
+    final_score = combine_scores(base_score, auto_click)
+
     return {
         "raw_score": round(raw, 6),
         "decision": round(decision, 6),
-        "normalized": round(normalize_from_decision(decision), 6),
+        "base_score": round(base_score, 6),
+        "normalized": round(final_score, 6),
         "risk_scale": RISK_SCALE,
+        "auto_click_detected": auto_click["detected"],
+        "auto_click_severity": auto_click["severity"],
+        "auto_click_reasons": auto_click["reasons"],
     }
 
 
@@ -148,4 +237,5 @@ def health():
         "model_offset": None if np.isnan(MODEL_OFFSET) else round(MODEL_OFFSET, 6),
         "risk_scale": RISK_SCALE,
         "normalization_mode": "decision_sigmoid_centered_at_zero",
+        "rule_engine": "auto_click_boost_enabled",
     }
