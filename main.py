@@ -186,9 +186,9 @@ def combine_scores(base_score: float, auto_click: dict) -> float:
 
         # ถ้ารุนแรงมาก ดันขั้นต่ำขึ้นเลย
         if severity >= 0.60:
-            final_score = max(final_score, 0.95)
+            final_score = max(final_score, 1)
         elif severity >= 0.35:
-            final_score = max(final_score, 0.85)
+            final_score = max(final_score, 0.9)
 
     return float(np.clip(final_score, 0.0, 1.0))
 
