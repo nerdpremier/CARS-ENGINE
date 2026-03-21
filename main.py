@@ -3,7 +3,7 @@ Risk Engine — Isolation Forest scoring microservice
 Raw-score pivot normalization + rule-based auto-click boost.
 
 แนวคิด:
-1) ใช้ Isolation Forest ให้คะแนนพฤติกรรมรวม
+1) ใช้ Isolation Forest ให้คะแนนพฤติกรรมรวมd
 2) ใช้ score_samples() เป็นคะแนนดิบจากโมเดล
 3) normalize ด้วย pivot + power curve
 4) เพิ่ม rule-based detector สำหรับ auto click
