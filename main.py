@@ -31,7 +31,7 @@ API_SECRET = os.getenv("RISK_API_SECRET", "change-me")
 # normalize config
 # pivot_ratio ยิ่งมาก = เริ่มมองว่าเสี่ยงเร็วขึ้น
 # anomaly_gamma ยิ่งมาก = ดันฝั่ง anomaly สูงขึ้นแรงกว่าเดิม
-PIVOT_RATIO = float(os.getenv("PIVOT_RATIO", "0.20"))
+PIVOT_RATIO = float(os.getenv("PIVOT_RATIO", "0.15"))
 ANOMALY_GAMMA = float(os.getenv("ANOMALY_GAMMA", "3.0"))
 
 EPS = 1e-12
